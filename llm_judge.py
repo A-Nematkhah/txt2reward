@@ -1,12 +1,13 @@
 import os
 import pickle
+import re
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from prompts import SYSTEM_PROMPT
 
 MODEL_PATH = "/content/drive/MyDrive/models/qwen3-4b"
 
-# ── 4-bit quantization: نصف VRAM، inference سریع‌تر ──────────────────────────
+# ── 4-bit quantization ────────────────────────────────────────────────────────
 quant_config = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_compute_dtype=torch.float16,
@@ -19,14 +20,9 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_PATH,
     quantization_config=quant_config,
-    device_map="cuda:0",          # مستقیم روی GPU، نه auto
+    device_map="cuda:0",
 )
-model.eval()                       # غیرفعال کردن dropout
-
-# ── Prompt ثابت رو یک‌بار tokenize کن ──────────────────────────────────────
-_PREFIX = f"{SYSTEM_PROMPT}\nSpeed:"
-_PREFIX_IDS = tokenizer(_PREFIX, return_tensors="pt").input_ids.to("cuda:0")
-_PREFIX_LEN  = _PREFIX_IDS.shape[1]
+model.eval()
 
 # ── Cache ─────────────────────────────────────────────────────────────────────
 CACHE_FILE = "reward_cache.pkl"
@@ -37,37 +33,43 @@ else:
     reward_cache = {}
 
 def discretize(speed, lane, distance):
-    """گرانول‌بندی دقیق‌تر برای cache hit بیشتر"""
-    speed_bin    = int(speed    // 5)
-    lane_bin     = int(lane)
-    distance_bin = int(distance // 10)
-    return (speed_bin, lane_bin, distance_bin)
+    return (int(speed // 5), int(lane), int(distance // 10))
 
-@torch.inference_mode()           # سریع‌تر از no_grad، بدون overhead
+@torch.inference_mode()
 def query_qwen(speed, lane, distance):
-    suffix = f"{speed:.0f}\nLane:{lane}\nFrontDistance:{distance:.0f}\nScore:"
-    suffix_ids = tokenizer(suffix, return_tensors="pt",
-                           add_special_tokens=False).input_ids.to("cuda:0")
+    # thinking mode رو غیرفعال کن با /no_think
+    prompt = (
+        f"{SYSTEM_PROMPT}\n"
+        f"Speed:{speed:.0f} Lane:{lane} FrontDistance:{distance:.0f}\n"
+        f"Reply with ONLY a single digit 0-5. /no_think\nScore:"
+    )
 
-    input_ids = torch.cat([_PREFIX_IDS, suffix_ids], dim=1)
+    # attention_mask رو صریح بساز تا warning نده
+    encoding = tokenizer(prompt, return_tensors="pt").to("cuda:0")
+    input_ids      = encoding["input_ids"]
+    attention_mask = encoding["attention_mask"]
 
     outputs = model.generate(
         input_ids,
-        max_new_tokens=1,
+        attention_mask=attention_mask,
+        # Qwen3 thinking mode رو با max_new_tokens بزرگ‌تر bypass می‌کنیم
+        # و بعد عدد رو از کل output extract می‌کنیم
+        max_new_tokens=256,
         do_sample=False,
         pad_token_id=tokenizer.eos_token_id,
-        use_cache=True,            # KV-cache فعال
+        use_cache=True,
     )
 
-    # فقط token جدید رو decode کن
-    new_token = outputs[0, input_ids.shape[1]:]
-    text = tokenizer.decode(new_token, skip_special_tokens=True).strip()
+    # فقط بخش جدید رو decode کن (بعد از prompt)
+    new_tokens = outputs[0, input_ids.shape[1]:]
+    text = tokenizer.decode(new_tokens, skip_special_tokens=True)
 
-    score = 3  # مقدار پیش‌فرض acceptable
-    for i in range(6):
-        if str(i) in text:
-            score = i
-            break
+    # thinking block رو حذف کن: <think>...</think>
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+    # اولین عدد ۰ تا ۵ رو پیدا کن
+    match = re.search(r"[0-5]", text)
+    score = int(match.group()) if match else 3   # fallback: acceptable
 
     return (score - 2.5) / 2.5
 
@@ -80,7 +82,6 @@ def judge_state(speed, lane, front_distance):
     reward = query_qwen(speed, lane, front_distance)
     reward_cache[key] = reward
 
-    # هر ۵۰ entry جدید، cache رو روی دیسک ذخیره کن
     if len(reward_cache) % 50 == 0:
         with open(CACHE_FILE, "wb") as f:
             pickle.dump(reward_cache, f)
