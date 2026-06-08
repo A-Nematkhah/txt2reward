@@ -22,7 +22,7 @@ ENV_CONFIG = {
 
 def make_env():
     env = gym.make("highway-v0", config=ENV_CONFIG)
-    env = LLMRewardWrapper(env, llm_every=50)
+    env = LLMRewardWrapper(env, llm_every=100)
     return env
 
 
