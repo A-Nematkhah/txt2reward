@@ -1,7 +1,8 @@
-gymnasium
-highway-env
-stable-baselines3
-transformers
-accelerate
-torch
-sentencepiece
+gymnasium>=0.29
+highway-env>=1.9
+stable-baselines3>=2.3
+transformers>=4.40
+accelerate>=0.30
+torch>=2.2
+sentencepiece>=0.1.99
+numpy>=1.26
