@@ -42,8 +42,7 @@ Score:
     outputs = model.generate(
         **inputs,
         max_new_tokens=1,
-        do_sample=False,
-        temperature=0.0
+        do_sample=False
     )
 
     text = tokenizer.decode(outputs[0], skip_special_tokens=True)
