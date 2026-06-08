@@ -23,7 +23,7 @@ ENV_CONFIG = {
 
 def make_env():
     env = gym.make("highway-v0", config=ENV_CONFIG)
-    env = LLMRewardWrapper(env, llm_every=200)
+    env = LLMRewardWrapper(env, llm_every=300)
     return env
 
 
@@ -57,8 +57,8 @@ if __name__ == "__main__":
         "MlpPolicy",
         env,
         verbose=0,          # silenced — KeepAliveCallback handles output
-        device="cpu",
-        n_steps=512,        # kept small so first print comes within ~30 sec
+        device="cuda",
+        n_steps=1024,        # kept small so first print comes within ~30 sec
         batch_size=64,
         n_epochs=10,
         learning_rate=3e-4,
@@ -67,7 +67,7 @@ if __name__ == "__main__":
 
     model.learn(
         total_timesteps=100_000,
-        callback=KeepAliveCallback(print_every=512),
+        callback=KeepAliveCallback(print_every=1024),
     )
 
     model.save("ppo_highway_qwen_reward")
