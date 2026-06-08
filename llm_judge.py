@@ -9,7 +9,7 @@ MODEL_PATH = "/content/drive/MyDrive/models/qwen3-4b"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_PATH,
-    torch_dtype=torch.float16,
+    dtype=torch.float16,
     device_map="auto"
 )
 
