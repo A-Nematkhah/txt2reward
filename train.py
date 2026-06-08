@@ -1,7 +1,6 @@
 import gymnasium as gym
 import highway_env  # noqa: F401 — registers highway-v0
 from stable_baselines3 import PPO
-from stable_baselines3.common.env_util import make_vec_env
 from reward_wrapper import LLMRewardWrapper
 
 # ── Environment config ────────────────────────────────────────────────────────
@@ -10,19 +9,20 @@ ENV_CONFIG = {
         "type": "Kinematics",
         "vehicles_count": 10,
         "features": ["presence", "x", "y", "vx", "vy"],
-        "normalize": False,   # raw values so _extract_state works correctly
+        "normalize": False,
     },
     "action": {"type": "DiscreteMetaAction"},
     "lanes_count": 4,
     "vehicles_count": 20,
-    "duration": 40,          # seconds per episode
+    "duration": 40,
     "reward_speed_range": [20, 30],
 }
 
 
 def make_env():
     env = gym.make("highway-v0", config=ENV_CONFIG)
-    env = LLMRewardWrapper(env, llm_every=100)
+    # llm_every=200: LLM is called ~500 times over 100k steps instead of 2000
+    env = LLMRewardWrapper(env, llm_every=200)
     return env
 
 
@@ -34,9 +34,10 @@ if __name__ == "__main__":
         "MlpPolicy",
         env,
         verbose=1,
-        device="cuda",          # switch to "cpu" if no GPU
-        n_steps=512,
+        device="cpu",           # MlpPolicy runs faster on CPU (no GPU transfer overhead)
+        n_steps=2048,           # larger rollout = fewer updates = faster wall-clock
         batch_size=64,
+        n_epochs=10,
         learning_rate=3e-4,
         tensorboard_log="./tb_logs/",
     )
