@@ -1,94 +1,77 @@
 import os
-import re
 import pickle
-import atexit
 import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from prompts import SYSTEM_PROMPT
 
 MODEL_PATH = "/content/drive/MyDrive/models/qwen3-4b"
+
+# ── 4-bit quantization: نصف VRAM، inference سریع‌تر ──────────────────────────
+quant_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4",
+)
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_PATH,
+    quantization_config=quant_config,
+    device_map="cuda:0",          # مستقیم روی GPU، نه auto
+)
+model.eval()                       # غیرفعال کردن dropout
+
+# ── Prompt ثابت رو یک‌بار tokenize کن ──────────────────────────────────────
+_PREFIX = f"{SYSTEM_PROMPT}\nSpeed:"
+_PREFIX_IDS = tokenizer(_PREFIX, return_tensors="pt").input_ids.to("cuda:0")
+_PREFIX_LEN  = _PREFIX_IDS.shape[1]
+
+# ── Cache ─────────────────────────────────────────────────────────────────────
 CACHE_FILE = "reward_cache.pkl"
+if os.path.exists(CACHE_FILE):
+    with open(CACHE_FILE, "rb") as f:
+        reward_cache = pickle.load(f)
+else:
+    reward_cache = {}
 
-# ── Lazy-loaded model (loaded only on first use) ──────────────────────────────
-_tokenizer = None
-_model = None
-
-
-def _load_model():
-    global _tokenizer, _model
-    if _model is None:
-        from transformers import AutoTokenizer, AutoModelForCausalLM
-        print("[txt2reward] Loading Qwen model...")
-        _tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-        _model = AutoModelForCausalLM.from_pretrained(
-            MODEL_PATH,
-            torch_dtype=torch.float16,
-            device_map="auto",
-        )
-        print("[txt2reward] Model loaded.")
-    return _tokenizer, _model
-
-
-# ── Persistent cache ──────────────────────────────────────────────────────────
-def _load_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "rb") as f:
-            return pickle.load(f)
-    return {}
-
-
-def _save_cache():
-    with open(CACHE_FILE, "wb") as f:
-        pickle.dump(reward_cache, f)
-
-
-reward_cache = _load_cache()
-atexit.register(_save_cache)   # always save on clean exit / crash
-
-
-# ── State discretisation ──────────────────────────────────────────────────────
 def discretize(speed, lane, distance):
+    """گرانول‌بندی دقیق‌تر برای cache hit بیشتر"""
     speed_bin    = int(speed    // 5)
     lane_bin     = int(lane)
-    distance_bin = int(min(distance, 100) // 10)   # cap at 100 m
+    distance_bin = int(distance // 10)
     return (speed_bin, lane_bin, distance_bin)
 
-
-# ── LLM query ────────────────────────────────────────────────────────────────
+@torch.inference_mode()           # سریع‌تر از no_grad، بدون overhead
 def query_qwen(speed, lane, distance):
-    tokenizer, model = _load_model()
+    suffix = f"{speed:.0f}\nLane:{lane}\nFrontDistance:{distance:.0f}\nScore:"
+    suffix_ids = tokenizer(suffix, return_tensors="pt",
+                           add_special_tokens=False).input_ids.to("cuda:0")
 
-    prompt = (
-        f"{SYSTEM_PROMPT}\n"
-        f"Speed:{speed:.1f} km/h\n"
-        f"Lane:{lane}\n"
-        f"FrontDistance:{distance:.1f} m\n"
-        "Score:"
+    input_ids = torch.cat([_PREFIX_IDS, suffix_ids], dim=1)
+
+    outputs = model.generate(
+        input_ids,
+        max_new_tokens=1,
+        do_sample=False,
+        pad_token_id=tokenizer.eos_token_id,
+        use_cache=True,            # KV-cache فعال
     )
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=3,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-        )
+    # فقط token جدید رو decode کن
+    new_token = outputs[0, input_ids.shape[1]:]
+    text = tokenizer.decode(new_token, skip_special_tokens=True).strip()
 
-    # Decode only the newly generated tokens (not the prompt)
-    new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
-    text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+    score = 3  # مقدار پیش‌فرض acceptable
+    for i in range(6):
+        if str(i) in text:
+            score = i
+            break
 
-    # Robust parse: find the first standalone digit 0-5
-    match = re.search(r"\b([0-5])\b", text)
-    score = int(match.group(1)) if match else 3   # default: acceptable
-
-    # Normalise to [-1, +1]
     return (score - 2.5) / 2.5
 
-
-# ── Public API ────────────────────────────────────────────────────────────────
-def judge_state(speed: float, lane: int, front_distance: float) -> float:
-    """Return a normalised reward in [-1, +1] for the given driving state."""
+def judge_state(speed, lane, front_distance):
     key = discretize(speed, lane, front_distance)
 
     if key in reward_cache:
@@ -97,8 +80,9 @@ def judge_state(speed: float, lane: int, front_distance: float) -> float:
     reward = query_qwen(speed, lane, front_distance)
     reward_cache[key] = reward
 
-    # Periodic checkpoint every 50 new entries
+    # هر ۵۰ entry جدید، cache رو روی دیسک ذخیره کن
     if len(reward_cache) % 50 == 0:
-        _save_cache()
+        with open(CACHE_FILE, "wb") as f:
+            pickle.dump(reward_cache, f)
 
     return reward
