@@ -13,6 +13,7 @@ model = PPO(
     "MlpPolicy",
     env,
     verbose=1,
+    device="cpu"
 )
 
 model.learn(
