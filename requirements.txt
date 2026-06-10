@@ -1,8 +1,5 @@
 gymnasium>=0.29
 highway-env>=1.9
 stable-baselines3>=2.3
-transformers>=4.40
-accelerate>=0.30
-torch>=2.2
-sentencepiece>=0.1.99
+groq>=0.9
 numpy>=1.26
