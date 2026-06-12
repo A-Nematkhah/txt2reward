@@ -46,7 +46,7 @@ _IDX_VX = 3   # سرعت طولی
 
 # highway-v0 محور x رو نرمالایز میکنه به [0,1] با absolute=False (پیش‌فرض)
 # سرعت نرمالایز‌شده رو باید به km/h برگردونیم
-_SPEED_SCALE    = 40.0   # تقریباً max_speed پیش‌فرض (m/s→ normalize)
+_SPEED_SCALE    = 30.0   # تقریباً max_speed پیش‌فرض (m/s→ normalize)
 _KMH_FACTOR     = 3.6
 _LANE_WIDTH     = 4.0    # متر — برای تبدیل y نرمالایز به lane index
 _NUM_LANES      = 4
